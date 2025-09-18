@@ -27,6 +27,9 @@ from snakemake_interface_executor_plugins.settings import (
 from snakemake_interface_executor_plugins.jobs import (
     JobExecutorInterface,
 )
+from snakemake.common.tbdstring import TBDString
+from os import fspath
+from collections.abc import Mapping, Sequence
 
 # Import the zslurm_shared module, should be already installed
 try:
@@ -82,6 +85,19 @@ common_settings = CommonSettings(
     pass_envvar_declarations_to_cmd=True,
     auto_deploy_default_storage_provider=False,
 )
+
+def to_primitive(x):
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return x
+    if isinstance(x, TBDString):
+        return str(x)                    # <- the important bit
+    if hasattr(x, "__fspath__"):
+        return fspath(x)
+    if isinstance(x, Mapping):
+        return {to_primitive(k): to_primitive(v) for k, v in x.items()}
+    if isinstance(x, Sequence) and not isinstance(x, (str, bytes, bytearray)):
+        return [to_primitive(i) for i in x]
+    return str(x)
 
 
 # Required:
@@ -190,13 +206,14 @@ class Executor(RemoteExecutor):
         while attempt > 0:
             try:
                 s = self.zslurm_server
+
                 slurm_jobid = s.submit_job(
                     job_name,
                     cmd,
                     cwd,
                     env,
-                    cores,
-                    mem,
+                    to_primitive(cores),
+                    to_primitive(mem),
                     reqtime,
                     requeue,
                     dependency,
@@ -207,7 +224,7 @@ class Executor(RemoteExecutor):
                     active_use_add,
                     active_use_remove,
                     partition,
-                    info_input_mb,
+                    to_primitive(info_input_mb),
                     info_output_file,
                     comment_str,
                 )
