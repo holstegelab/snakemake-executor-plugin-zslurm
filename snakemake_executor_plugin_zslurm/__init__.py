@@ -14,6 +14,7 @@ import socket
 import http.client as httplib
 import time
 import asyncio
+import uuid
 from typing import Generator, List, Optional
 
 from snakemake_interface_common.exceptions import WorkflowError
@@ -68,9 +69,9 @@ class ExecutorSettings(ExecutorSettingsBase):
             "required": False,
         },
     )
-    ip: Optional[str] = field(
+    instance: Optional[str] = field(
         default=None,
-        metadata={"help": "IP address of the zslurm server. Default is localhost."},
+        metadata={"help": "Instance of the zslurm server. Default is None."},
     )
 
 
@@ -87,10 +88,13 @@ common_settings = CommonSettings(
 )
 
 def to_primitive(x):
-    if x is None or isinstance(x, (str, int, float, bool)):
+    if x is None:
         return x
-    if isinstance(x, TBDString):
-        return str(x)                    # <- the important bit
+    # Handle Snakemake's TBDString first (it subclasses str and is not XML-RPC serializable)
+    if isinstance(x, TBDString) or type(x).__name__ == "TBDString":
+        return str(x)
+    if isinstance(x, (str, int, float, bool)):
+        return x
     if hasattr(x, "__fspath__"):
         return fspath(x)
     if isinstance(x, Mapping):
@@ -104,14 +108,19 @@ def to_primitive(x):
 # Implementation of your executor
 class Executor(RemoteExecutor):
     def __post_init__(self):
-        config_file = self.workflow.executor_settings.config_file
-        self.zslurm_config = zslurm_shared.get_config(config_file)
-        if self.workflow.executor_settings.ip:
-            ip = self.workflow.executor_settings.ip
-        else:
-            ip = "localhost"
+        #set _owner_id to a random uuid
+        self._owner_id = str(uuid.uuid4())
+        cfg_path = self.workflow.executor_settings.config_file
+        instance = getattr(self.workflow.executor_settings, "instance", None)
 
-        job_url = zslurm_shared.get_job_url(ip, self.zslurm_config)
+        self.zslurm_config = zslurm_shared.get_config(
+            config_path=cfg_path,
+            instance=instance,  # optional; safe to keep
+        )
+
+        job_url = zslurm_shared.get_job_url(
+            instance=instance  # config no longer needed here
+        )
         self.zslurm_server = zslurm_shared.TimeoutServerProxy(job_url, allow_none=True)
 
     def run_job(self, job: JobExecutorInterface):
@@ -201,6 +210,12 @@ class Executor(RemoteExecutor):
         #    self.external_jobid[f] for f in job.input if f in self.external_jobid
         # )
 
+        # SSD resources
+        ssd_use = str(job.resources.get("ssd_use", "no"))
+        ssd_gb = ensure_float(
+            job.resources.get("ssd_gb", 0), f"ssd_gb must be an float for {job_name}"
+        )
+
         requeue = 0  # done by snakemake
         attempt = 4
         while attempt > 0:
@@ -208,25 +223,28 @@ class Executor(RemoteExecutor):
                 s = self.zslurm_server
 
                 slurm_jobid = s.submit_job(
-                    job_name,
-                    cmd,
-                    cwd,
-                    env,
+                    to_primitive(job_name),
+                    to_primitive(cmd),
+                    to_primitive(cwd),
+                    to_primitive(env),
                     to_primitive(cores),
                     to_primitive(mem),
-                    reqtime,
-                    requeue,
-                    dependency,
-                    arch_use_add,
-                    arch_use_remove,
-                    dcache_use_add,
-                    dcache_use_remove,
-                    active_use_add,
-                    active_use_remove,
-                    partition,
+                    to_primitive(reqtime),
+                    to_primitive(requeue),
+                    to_primitive(dependency),
+                    to_primitive(arch_use_add),
+                    to_primitive(arch_use_remove),
+                    to_primitive(dcache_use_add),
+                    to_primitive(dcache_use_remove),
+                    to_primitive(active_use_add),
+                    to_primitive(active_use_remove),
+                    to_primitive(partition),
                     to_primitive(info_input_mb),
-                    info_output_file,
-                    comment_str,
+                    to_primitive(info_output_file),
+                    to_primitive(comment_str),
+                    to_primitive(ssd_use),
+                    to_primitive(ssd_gb),
+                    to_primitive(self._owner_id),
                 )
                 break
             except (socket.error, httplib.HTTPException, AttributeError) as serror:
@@ -253,10 +271,23 @@ class Executor(RemoteExecutor):
 
         try:
             s = self.zslurm_server
-            zslurm_done_jobs = s.list_done_jobs()
-            zslurm_active_jobs = s.list_jobs()
-        except (socket.error, httplib.HTTPException, AttributeError) as serror:
-            self.logger.error(
+            last_done = getattr(self, "_last_seen_done_jobid", None)
+
+            if last_done is None:
+                zslurm_done_jobs = s.list_done_jobs(None, self._owner_id)
+            else:
+                zslurm_done_jobs = s.list_done_jobs(last_done, self._owner_id)
+
+            zslurm_active_jobs = s.list_jobs(self._owner_id)
+        except (
+            socket.error,
+            socket.timeout,
+            httplib.HTTPException,
+            AttributeError,
+            TimeoutError,
+            asyncio.TimeoutError,
+        ) as serror:
+            self.logger.warning(
                 f"ZSLURM job status check failed. The error message was {serror}"
             )
             if (
@@ -265,6 +296,12 @@ class Executor(RemoteExecutor):
                 for active_job in active_jobs:  # assume all are still running
                     yield active_job
             return
+
+        if zslurm_done_jobs:
+            try:
+                self._last_seen_done_jobid = zslurm_done_jobs[-1][0]
+            except (IndexError, TypeError, KeyError):
+                pass
 
         done_job_ids_state = {d[0]: d[2] for d in zslurm_done_jobs}
         active_job_ids_state = {a[0]: a[2] for a in zslurm_active_jobs}
