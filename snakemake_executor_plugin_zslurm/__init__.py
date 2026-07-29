@@ -57,11 +57,14 @@ def ensure_float(value, msg=None):
         raise ValueError(msg or f"Expected a float, but got {value}")
 
 
+DEFAULT_PRIORITY = 100
+
+
 def submit_args_with_priority(submit_args, priority):
     """Append the backwards-compatible zslurm priority API tail."""
     priority = ensure_int(priority)
     args = list(submit_args)
-    if priority != 0:
+    if priority != DEFAULT_PRIORITY:
         # submit_job(..., owner, idempotency_key=None, priority=priority)
         args.extend([None, priority])
     return args
@@ -96,11 +99,11 @@ class ExecutorSettings(ExecutorSettingsBase):
         metadata={"help": "Instance of the zslurm server. Default is None."},
     )
     priority: int = field(
-        default=0,
+        default=DEFAULT_PRIORITY,
         metadata={
             "help": (
                 "Pipeline-wide ZSlurm scheduling priority. Higher integer values "
-                "run before lower values; default: 0."
+                "run before lower values; default: 100."
             ),
             "required": False,
         },
@@ -301,7 +304,7 @@ class Executor(RemoteExecutor):
                 )
                 break
             except xmlrpc_client.Fault as serror:
-                if self._zslurm_priority != 0:
+                if self._zslurm_priority != DEFAULT_PRIORITY:
                     detail = (
                         " Update the running zslurm manager before using "
                         f"--zslurm-priority ({self._zslurm_priority})."

@@ -1,6 +1,7 @@
 import pytest
 
 from snakemake_executor_plugin_zslurm import (
+    DEFAULT_PRIORITY,
     set_dcache_transfer_slot_env,
     submit_args_with_priority,
 )
@@ -19,18 +20,23 @@ def test_negative_transfer_slots_are_rejected():
         set_dcache_transfer_slot_env({}, -1)
 
 
-def test_priority_zero_keeps_legacy_submit_signature():
+def test_default_priority_keeps_legacy_submit_signature():
     original = ["job", "owner"]
-    assert submit_args_with_priority(original, 0) == original
+    assert DEFAULT_PRIORITY == 100
+    assert submit_args_with_priority(original, 100) == original
 
 
-def test_nonzero_priority_appends_idempotency_placeholder_and_priority():
-    assert submit_args_with_priority(["job", "owner"], 100) == [
+def test_nondefault_priority_appends_idempotency_placeholder_and_priority():
+    assert submit_args_with_priority(["job", "owner"], 200) == [
         "job",
         "owner",
         None,
-        100,
+        200,
     ]
+
+
+def test_zero_priority_is_supported():
+    assert submit_args_with_priority(["job", "owner"], 0)[-2:] == [None, 0]
 
 
 def test_negative_priority_is_supported():
