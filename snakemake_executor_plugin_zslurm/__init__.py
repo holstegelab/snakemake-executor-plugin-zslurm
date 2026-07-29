@@ -70,15 +70,38 @@ def submit_args_with_priority(submit_args, priority):
     return args
 
 
+def set_dcache_slot_env(env, download=0, upload=0, legacy=0):
+    """Forward directional Snakemake transfer resources as zslurm metadata."""
+    values = {
+        "download": ensure_float(download),
+        "upload": ensure_float(upload),
+        "legacy": ensure_float(legacy),
+    }
+    if any(value < 0 for value in values.values()):
+        raise ValueError("dCache transfer slots must be non-negative")
+    if values["legacy"] > 0 and (
+        values["download"] > 0 or values["upload"] > 0
+    ):
+        raise ValueError(
+            "dcache_transfer_slots cannot be combined with directional slots"
+        )
+
+    env_names = {
+        "download": "ZSLURM_DCACHE_DOWNLOAD_SLOTS",
+        "upload": "ZSLURM_DCACHE_UPLOAD_SLOTS",
+        "legacy": "ZSLURM_DCACHE_TRANSFER_SLOTS",
+    }
+    for name in env_names.values():
+        env.pop(name, None)
+    for direction, value in values.items():
+        if value > 0:
+            env[env_names[direction]] = str(value)
+    return values
+
+
 def set_dcache_transfer_slot_env(env, value):
-    """Forward the Snakemake transfer-slot resource as zslurm metadata."""
-    slots = ensure_float(value)
-    if slots < 0:
-        raise ValueError("dcache_transfer_slots must be non-negative")
-    env.pop("ZSLURM_DCACHE_TRANSFER_SLOTS", None)
-    if slots > 0:
-        env["ZSLURM_DCACHE_TRANSFER_SLOTS"] = str(slots)
-    return slots
+    """Backward-compatible helper for the legacy, non-directional resource."""
+    return set_dcache_slot_env(env, legacy=value)["legacy"]
 
 
 # Optional:
@@ -147,7 +170,7 @@ class Executor(RemoteExecutor):
         self._owner_id = str(uuid.uuid4())
         try:
             self._zslurm_priority = ensure_int(
-                getattr(self.workflow.executor_settings, "priority", 0)
+                getattr(self.workflow.executor_settings, "priority", DEFAULT_PRIORITY)
             )
         except ValueError as error:
             raise WorkflowError(
@@ -228,12 +251,15 @@ class Executor(RemoteExecutor):
 
         env = dict(os.environ)
         try:
-            set_dcache_transfer_slot_env(
-                env, job.resources.get("dcache_transfer_slots", 0)
+            set_dcache_slot_env(
+                env,
+                download=job.resources.get("dcache_download_slots", 0),
+                upload=job.resources.get("dcache_upload_slots", 0),
+                legacy=job.resources.get("dcache_transfer_slots", 0),
             )
         except ValueError as error:
             raise WorkflowError(
-                f"Invalid dcache_transfer_slots for {job_name}: {error}"
+                f"Invalid dCache transfer slots for {job_name}: {error}"
             ) from error
 
         # Remove SNAKEMAKE_PROFILE from environment as the snakemake call inside
