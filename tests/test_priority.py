@@ -32,6 +32,7 @@ def test_directional_transfer_slots_are_independent_and_clear_inherited_env():
     assert env == {
         "ZSLURM_DCACHE_DOWNLOAD_SLOTS": "2.0",
         "ZSLURM_DCACHE_UPLOAD_SLOTS": "3.0",
+        "ZSLURM_DCACHE_TRANSFER_SLOTS": "3.0",
     }
 
 

@@ -71,7 +71,7 @@ def submit_args_with_priority(submit_args, priority):
 
 
 def set_dcache_slot_env(env, download=0, upload=0, legacy=0):
-    """Forward directional Snakemake transfer resources as zslurm metadata."""
+    """Forward directional slots plus a rolling-upgrade legacy fallback."""
     values = {
         "download": ensure_float(download),
         "upload": ensure_float(upload),
@@ -93,9 +93,18 @@ def set_dcache_slot_env(env, download=0, upload=0, legacy=0):
     }
     for name in env_names.values():
         env.pop(name, None)
-    for direction, value in values.items():
+    for direction in ("download", "upload"):
+        value = values[direction]
         if value > 0:
             env[env_names[direction]] = str(value)
+
+    legacy_metadata = values["legacy"]
+    if values["download"] > 0 or values["upload"] > 0:
+        # Old managers only understand the combined field. New managers ignore
+        # this fallback whenever either directional field is present.
+        legacy_metadata = max(values["download"], values["upload"])
+    if legacy_metadata > 0:
+        env[env_names["legacy"]] = str(legacy_metadata)
     return values
 
 
