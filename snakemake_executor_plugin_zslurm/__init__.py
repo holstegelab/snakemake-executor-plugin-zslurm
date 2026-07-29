@@ -12,6 +12,7 @@ import threading
 import time
 import socket
 import http.client as httplib
+import xmlrpc.client as xmlrpc_client
 import time
 import asyncio
 import uuid
@@ -45,15 +46,36 @@ except ImportError:
 def ensure_int(value, msg=None):
     try:
         return int(value)
-    except ValueError:
+    except (TypeError, ValueError):
         raise ValueError(msg or f"Expected an integer, but got {value}")
 
 
 def ensure_float(value, msg=None):
     try:
         return float(value)
-    except ValueError:
+    except (TypeError, ValueError):
         raise ValueError(msg or f"Expected a float, but got {value}")
+
+
+def submit_args_with_priority(submit_args, priority):
+    """Append the backwards-compatible zslurm priority API tail."""
+    priority = ensure_int(priority)
+    args = list(submit_args)
+    if priority != 0:
+        # submit_job(..., owner, idempotency_key=None, priority=priority)
+        args.extend([None, priority])
+    return args
+
+
+def set_dcache_transfer_slot_env(env, value):
+    """Forward the Snakemake transfer-slot resource as zslurm metadata."""
+    slots = ensure_float(value)
+    if slots < 0:
+        raise ValueError("dcache_transfer_slots must be non-negative")
+    env.pop("ZSLURM_DCACHE_TRANSFER_SLOTS", None)
+    if slots > 0:
+        env["ZSLURM_DCACHE_TRANSFER_SLOTS"] = str(slots)
+    return slots
 
 
 # Optional:
@@ -72,6 +94,16 @@ class ExecutorSettings(ExecutorSettingsBase):
     instance: Optional[str] = field(
         default=None,
         metadata={"help": "Instance of the zslurm server. Default is None."},
+    )
+    priority: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Pipeline-wide ZSlurm scheduling priority. Higher integer values "
+                "run before lower values; default: 0."
+            ),
+            "required": False,
+        },
     )
 
 
@@ -110,6 +142,14 @@ class Executor(RemoteExecutor):
     def __post_init__(self):
         #set _owner_id to a random uuid
         self._owner_id = str(uuid.uuid4())
+        try:
+            self._zslurm_priority = ensure_int(
+                getattr(self.workflow.executor_settings, "priority", 0)
+            )
+        except ValueError as error:
+            raise WorkflowError(
+                f"ZSlurm priority must be an integer: {error}"
+            ) from error
         cfg_path = self.workflow.executor_settings.config_file
         instance = getattr(self.workflow.executor_settings, "instance", None)
 
@@ -184,6 +224,14 @@ class Executor(RemoteExecutor):
         cwd = self.workflow.workdir_init
 
         env = dict(os.environ)
+        try:
+            set_dcache_transfer_slot_env(
+                env, job.resources.get("dcache_transfer_slots", 0)
+            )
+        except ValueError as error:
+            raise WorkflowError(
+                f"Invalid dcache_transfer_slots for {job_name}: {error}"
+            ) from error
 
         # Remove SNAKEMAKE_PROFILE from environment as the snakemake call inside
         # of the cluster job must run locally (or complains about missing -j).
@@ -222,7 +270,7 @@ class Executor(RemoteExecutor):
             try:
                 s = self.zslurm_server
 
-                slurm_jobid = s.submit_job(
+                submit_args = [
                     to_primitive(job_name),
                     to_primitive(cmd),
                     to_primitive(cwd),
@@ -245,8 +293,25 @@ class Executor(RemoteExecutor):
                     to_primitive(ssd_use),
                     to_primitive(ssd_gb),
                     to_primitive(self._owner_id),
+                ]
+                slurm_jobid = s.submit_job(
+                    *submit_args_with_priority(
+                        submit_args, self._zslurm_priority
+                    )
                 )
                 break
+            except xmlrpc_client.Fault as serror:
+                if self._zslurm_priority != 0:
+                    detail = (
+                        " Update the running zslurm manager before using "
+                        f"--zslurm-priority ({self._zslurm_priority})."
+                    )
+                else:
+                    detail = ""
+                raise WorkflowError(
+                    f"ZSLURM rejected the submission.{detail} "
+                    f"The server returned: {serror}"
+                ) from serror
             except (socket.error, httplib.HTTPException, AttributeError) as serror:
                 attempt -= 1
                 if attempt == 0:
@@ -257,7 +322,8 @@ class Executor(RemoteExecutor):
                 time.sleep(15)
 
         self.logger.info(
-            f"Job {job.jobid}-{job_name} has been submitted with ZSlurm jobid {slurm_jobid} "
+            f"Job {job.jobid}-{job_name} has been submitted with ZSlurm jobid "
+            f"{slurm_jobid} (priority {self._zslurm_priority})"
         )
         self.report_job_submission(SubmittedJobInfo(job, external_jobid=slurm_jobid))
 

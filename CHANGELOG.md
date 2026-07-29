@@ -1,3 +1,11 @@
+## Unreleased
+
+### Added
+
+* Add pipeline-wide --zslurm-priority and propagate it to the zslurm manager.
+* Forward the Snakemake dcache_transfer_slots resource to the zslurm manager.
+* Keep priority 0 submissions compatible with older zslurm managers.
+
 ## 1.0.0 (2024-11-13)
 
 
