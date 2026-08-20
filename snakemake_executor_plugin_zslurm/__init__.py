@@ -70,15 +70,22 @@ def submit_args_with_priority(submit_args, priority):
     return args
 
 
-def set_dcache_slot_env(env, download=0, upload=0, legacy=0):
-    """Forward directional slots plus a rolling-upgrade legacy fallback."""
+def set_dcache_slot_env(env, download=0, upload=0, legacy=0, s3_download=0):
+    """Forward transfer slots plus conservative rolling-upgrade fallbacks."""
     values = {
         "download": ensure_float(download),
         "upload": ensure_float(upload),
         "legacy": ensure_float(legacy),
+        "s3_download": ensure_float(s3_download),
     }
     if any(value < 0 for value in values.values()):
-        raise ValueError("dCache transfer slots must be non-negative")
+        raise ValueError("transfer slots must be non-negative")
+    if values["s3_download"] > 0 and any(
+        values[name] > 0 for name in ("download", "upload", "legacy")
+    ):
+        raise ValueError(
+            "s3_download_slots cannot be combined with dCache transfer slots"
+        )
     if values["legacy"] > 0 and (
         values["download"] > 0 or values["upload"] > 0
     ):
@@ -90,16 +97,23 @@ def set_dcache_slot_env(env, download=0, upload=0, legacy=0):
         "download": "ZSLURM_DCACHE_DOWNLOAD_SLOTS",
         "upload": "ZSLURM_DCACHE_UPLOAD_SLOTS",
         "legacy": "ZSLURM_DCACHE_TRANSFER_SLOTS",
+        "s3_download": "ZSLURM_S3_DOWNLOAD_SLOTS",
     }
     for name in env_names.values():
         env.pop(name, None)
-    for direction in ("download", "upload"):
+    for direction in ("download", "upload", "s3_download"):
         value = values[direction]
         if value > 0:
             env[env_names[direction]] = str(value)
 
     legacy_metadata = values["legacy"]
-    if values["download"] > 0 or values["upload"] > 0:
+    if values["s3_download"] > 0:
+        # The current manager has no S3 pool yet, so use its dCache-download
+        # pool during a rolling upgrade. An updated manager ignores both
+        # fallbacks whenever native S3 metadata is present.
+        env[env_names["download"]] = str(values["s3_download"])
+        legacy_metadata = values["s3_download"]
+    elif values["download"] > 0 or values["upload"] > 0:
         # Old managers only understand the combined field. New managers ignore
         # this fallback whenever either directional field is present.
         legacy_metadata = max(values["download"], values["upload"])
@@ -265,10 +279,11 @@ class Executor(RemoteExecutor):
                 download=job.resources.get("dcache_download_slots", 0),
                 upload=job.resources.get("dcache_upload_slots", 0),
                 legacy=job.resources.get("dcache_transfer_slots", 0),
+                s3_download=job.resources.get("s3_download_slots", 0),
             )
         except ValueError as error:
             raise WorkflowError(
-                f"Invalid dCache transfer slots for {job_name}: {error}"
+                f"Invalid transfer slots for {job_name}: {error}"
             ) from error
 
         # Remove SNAKEMAKE_PROFILE from environment as the snakemake call inside

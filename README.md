@@ -21,7 +21,10 @@ profiles retain their current behaviour. The priority is attached to all jobs in
 the run, including staging, download, upload, archive, and regular compute jobs.
 The plugin forwards `dcache_download_slots` and `dcache_upload_slots` rule
 resources, allowing the manager to enforce independent instance-wide transfer
-limits while selecting the highest-priority waiting transfer. The plugin also
+limits while selecting the highest-priority waiting transfer. It also forwards
+`s3_download_slots` to a separate S3 download pool. During a rolling upgrade,
+an S3 request additionally consumes the dCache download pool on an old manager;
+an updated manager sees the native S3 metadata and ignores that fallback. The plugin also
 emits a conservative combined fallback for old managers during a rolling
 upgrade; updated managers ignore that fallback when directional metadata is
 present. The explicit legacy `dcache_transfer_slots` resource is still

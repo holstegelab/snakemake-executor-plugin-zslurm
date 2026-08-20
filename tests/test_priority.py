@@ -28,7 +28,12 @@ def test_directional_transfer_slots_are_independent_and_clear_inherited_env():
         "ZSLURM_DCACHE_TRANSFER_SLOTS": "7",
     }
     values = set_dcache_slot_env(env, download=2, upload=3)
-    assert values == {"download": 2.0, "upload": 3.0, "legacy": 0.0}
+    assert values == {
+        "download": 2.0,
+        "upload": 3.0,
+        "legacy": 0.0,
+        "s3_download": 0.0,
+    }
     assert env == {
         "ZSLURM_DCACHE_DOWNLOAD_SLOTS": "2.0",
         "ZSLURM_DCACHE_UPLOAD_SLOTS": "3.0",
@@ -39,6 +44,32 @@ def test_directional_transfer_slots_are_independent_and_clear_inherited_env():
 def test_directional_and_legacy_slots_cannot_be_mixed():
     with pytest.raises(ValueError, match="cannot be combined"):
         set_dcache_slot_env({}, download=1, legacy=1)
+
+
+def test_s3_download_has_native_and_rolling_upgrade_fallback_metadata():
+    env = {
+        "ZSLURM_S3_DOWNLOAD_SLOTS": "9",
+        "ZSLURM_DCACHE_DOWNLOAD_SLOTS": "8",
+        "ZSLURM_DCACHE_UPLOAD_SLOTS": "7",
+        "ZSLURM_DCACHE_TRANSFER_SLOTS": "6",
+    }
+    values = set_dcache_slot_env(env, s3_download=2)
+    assert values == {
+        "download": 0.0,
+        "upload": 0.0,
+        "legacy": 0.0,
+        "s3_download": 2.0,
+    }
+    assert env == {
+        "ZSLURM_S3_DOWNLOAD_SLOTS": "2.0",
+        "ZSLURM_DCACHE_DOWNLOAD_SLOTS": "2.0",
+        "ZSLURM_DCACHE_TRANSFER_SLOTS": "2.0",
+    }
+
+
+def test_s3_and_dcache_slots_cannot_be_mixed():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        set_dcache_slot_env({}, download=1, s3_download=1)
 
 
 def test_default_priority_keeps_legacy_submit_signature():
