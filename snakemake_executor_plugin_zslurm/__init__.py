@@ -71,7 +71,7 @@ def submit_args_with_priority(submit_args, priority):
 
 
 def set_dcache_slot_env(env, download=0, upload=0, legacy=0, s3_download=0):
-    """Forward transfer slots plus conservative rolling-upgrade fallbacks."""
+    """Forward transfer slots, keeping S3 independent from dCache."""
     values = {
         "download": ensure_float(download),
         "upload": ensure_float(upload),
@@ -107,13 +107,7 @@ def set_dcache_slot_env(env, download=0, upload=0, legacy=0, s3_download=0):
             env[env_names[direction]] = str(value)
 
     legacy_metadata = values["legacy"]
-    if values["s3_download"] > 0:
-        # The current manager has no S3 pool yet, so use its dCache-download
-        # pool during a rolling upgrade. An updated manager ignores both
-        # fallbacks whenever native S3 metadata is present.
-        env[env_names["download"]] = str(values["s3_download"])
-        legacy_metadata = values["s3_download"]
-    elif values["download"] > 0 or values["upload"] > 0:
+    if values["download"] > 0 or values["upload"] > 0:
         # Old managers only understand the combined field. New managers ignore
         # this fallback whenever either directional field is present.
         legacy_metadata = max(values["download"], values["upload"])

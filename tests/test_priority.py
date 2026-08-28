@@ -46,7 +46,7 @@ def test_directional_and_legacy_slots_cannot_be_mixed():
         set_dcache_slot_env({}, download=1, legacy=1)
 
 
-def test_s3_download_has_native_and_rolling_upgrade_fallback_metadata():
+def test_s3_download_has_only_native_metadata():
     env = {
         "ZSLURM_S3_DOWNLOAD_SLOTS": "9",
         "ZSLURM_DCACHE_DOWNLOAD_SLOTS": "8",
@@ -60,11 +60,7 @@ def test_s3_download_has_native_and_rolling_upgrade_fallback_metadata():
         "legacy": 0.0,
         "s3_download": 2.0,
     }
-    assert env == {
-        "ZSLURM_S3_DOWNLOAD_SLOTS": "2.0",
-        "ZSLURM_DCACHE_DOWNLOAD_SLOTS": "2.0",
-        "ZSLURM_DCACHE_TRANSFER_SLOTS": "2.0",
-    }
+    assert env == {"ZSLURM_S3_DOWNLOAD_SLOTS": "2.0"}
 
 
 def test_s3_and_dcache_slots_cannot_be_mixed():

@@ -6,6 +6,11 @@
 * Forward the Snakemake dcache_transfer_slots resource to the zslurm manager.
 * Keep default-priority submissions compatible with older zslurm managers.
 
+### Changed
+
+* Submit S3 downloads only to the independent S3 transfer pool instead of also
+  consuming dCache fallback slots.
+
 ## 1.0.0 (2024-11-13)
 
 
