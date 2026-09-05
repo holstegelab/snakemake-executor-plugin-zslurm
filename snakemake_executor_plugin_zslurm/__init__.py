@@ -197,6 +197,28 @@ def set_dcache_transfer_slot_env(env, value):
     return set_dcache_slot_env(env, legacy=value)["legacy"]
 
 
+def set_execution_identity_env(env, *, instance, owner_id, job_url):
+    """Expose the logical scheduler identity to code running inside a job.
+
+    The chief adds the unique ``ZSLURM_JOB_ID`` when it starts the child. The
+    executor supplies the workflow owner and manager endpoint needed by a
+    later audit job to authenticate that logical completion. The endpoint is
+    runtime-only and should never be copied into a persistent receipt.
+    """
+
+    values = {
+        "ZSLURM_INSTANCE": instance,
+        "ZSLURM_OWNER_ID": owner_id,
+        "ZSLURM_JOB_URL": job_url,
+    }
+    for name, raw in values.items():
+        value = str(raw or "").strip()
+        if not value:
+            raise ValueError(f"{name} must not be empty")
+        env[name] = value
+    return env
+
+
 # Optional:
 # define additional settings for your executor
 # They will occur in the Snakemake CLI as --<executor-name>-<param-name>
@@ -272,15 +294,24 @@ class Executor(RemoteExecutor):
         cfg_path = self.workflow.executor_settings.config_file
         instance = getattr(self.workflow.executor_settings, "instance", None)
 
+        resolved_instance = zslurm_shared.resolve_instance_name(instance)
+        if not resolved_instance:
+            raise WorkflowError(
+                "Unable to resolve a unique ZSlurm instance; pass "
+                "--zslurm-instance explicitly."
+            )
+        self._zslurm_instance = str(resolved_instance)
         self.zslurm_config = zslurm_shared.get_config(
             config_path=cfg_path,
-            instance=instance,  # optional; safe to keep
+            instance=self._zslurm_instance,
         )
 
-        job_url = zslurm_shared.get_job_url(
-            instance=instance  # config no longer needed here
+        self._zslurm_job_url = zslurm_shared.get_job_url(
+            instance=self._zslurm_instance
         )
-        self.zslurm_server = zslurm_shared.TimeoutServerProxy(job_url, allow_none=True)
+        self.zslurm_server = zslurm_shared.TimeoutServerProxy(
+            self._zslurm_job_url, allow_none=True
+        )
 
     def run_job(self, job: JobExecutorInterface):
         # Implement here how to run a job.
@@ -344,6 +375,17 @@ class Executor(RemoteExecutor):
         cwd = self.workflow.workdir_init
 
         env = dict(os.environ)
+        try:
+            set_execution_identity_env(
+                env,
+                instance=self._zslurm_instance,
+                owner_id=self._owner_id,
+                job_url=self._zslurm_job_url,
+            )
+        except ValueError as error:
+            raise WorkflowError(
+                f"Invalid ZSlurm execution identity for {job_name}: {error}"
+            ) from error
         try:
             set_dcache_slot_env(
                 env,

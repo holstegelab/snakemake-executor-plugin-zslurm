@@ -18,6 +18,11 @@ The native name takes precedence when both are set. If neither CPU resource is
 present, rule `threads` and then Snakemake's internal `_cores` value are used.
 This allows one workflow to keep executor-specific policy in separate profiles.
 
+Every child also receives `ZSLURM_INSTANCE`, `ZSLURM_OWNER_ID`, and the
+runtime-only `ZSLURM_JOB_URL`; the chief adds its unique `ZSLURM_JOB_ID`.
+Downstream provenance code can therefore distinguish logical rules sharing one
+outer `SLURM_JOB_ID` and authenticate their terminal state with the manager.
+
 
 ## Pipeline priority
 

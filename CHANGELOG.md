@@ -12,6 +12,8 @@
   consuming dCache fallback slots.
 * Accept Snakemake's portable `runtime` (minutes) and `cpus_per_task` resource
   names while retaining `time` (seconds) and `n` as explicit ZSlurm overrides.
+* Export the ZSlurm instance, workflow owner, and runtime manager endpoint to
+  logical jobs so provenance can authenticate their unique job IDs.
 
 ## 1.0.0 (2024-11-13)
 
