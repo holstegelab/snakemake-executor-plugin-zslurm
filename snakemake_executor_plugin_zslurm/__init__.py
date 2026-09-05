@@ -58,6 +58,35 @@ def ensure_float(value, msg=None):
 
 
 DEFAULT_PRIORITY = 100
+TARGETED_STATUS_RETRY_SECONDS = 300
+
+
+def is_missing_rpc_method(error, method):
+    """Return whether an XML-RPC fault means a rolling old manager."""
+    detail = str(getattr(error, "faultString", error)).lower()
+    method = str(method).lower()
+    return method in detail and (
+        "not supported" in detail
+        or "unsupported" in detail
+        or "not found" in detail
+        or "unknown method" in detail
+    )
+
+
+def parse_targeted_job_states(response):
+    """Validate and normalize the targeted completion-status response."""
+    if not isinstance(response, Mapping):
+        raise ValueError("get_job_states returned a non-mapping response")
+    states = response.get("states")
+    terminal = response.get("terminal", [])
+    if not isinstance(states, Mapping):
+        raise ValueError("get_job_states response has no states mapping")
+    if isinstance(terminal, (str, bytes)) or not isinstance(terminal, Sequence):
+        raise ValueError("get_job_states response has an invalid terminal list")
+    return (
+        {str(jobid): str(state) for jobid, state in states.items()},
+        {str(jobid) for jobid in terminal},
+    )
 
 
 def submit_args_with_priority(submit_args, priority):
@@ -381,17 +410,44 @@ class Executor(RemoteExecutor):
         if not hasattr(self, "zslurm_server"):
             for active_job in active_jobs:
                 yield active_job
+            return
 
         try:
             s = self.zslurm_server
-            last_done = getattr(self, "_last_seen_done_jobid", None)
+            targeted_states = None
+            targeted_terminal = set()
+            retry_after = getattr(self, "_targeted_status_retry_after", 0.0)
+            now = time.monotonic()
+            if now >= retry_after:
+                try:
+                    response = s.get_job_states(
+                        [str(job.external_jobid) for job in active_jobs],
+                        self._owner_id,
+                    )
+                    targeted_states, targeted_terminal = (
+                        parse_targeted_job_states(response)
+                    )
+                    self._targeted_status_retry_after = 0.0
+                except xmlrpc_client.Fault as error:
+                    if not is_missing_rpc_method(error, "get_job_states"):
+                        raise
+                    # A rolling old manager has no exact-id lookup. Periodically
+                    # probe again so an in-place manager handover is detected.
+                    self._targeted_status_retry_after = (
+                        now + TARGETED_STATUS_RETRY_SECONDS
+                    )
 
-            if last_done is None:
-                zslurm_done_jobs = s.list_done_jobs(None, self._owner_id)
-            else:
-                zslurm_done_jobs = s.list_done_jobs(last_done, self._owner_id)
-
-            zslurm_active_jobs = s.list_jobs(self._owner_id)
+            zslurm_done_jobs = []
+            zslurm_active_jobs = []
+            if targeted_states is None:
+                last_done = getattr(self, "_last_seen_done_jobid", None)
+                if last_done is None:
+                    zslurm_done_jobs = s.list_done_jobs(None, self._owner_id)
+                else:
+                    zslurm_done_jobs = s.list_done_jobs(
+                        last_done, self._owner_id
+                    )
+                zslurm_active_jobs = s.list_jobs(self._owner_id)
         except (
             socket.error,
             socket.timeout,
@@ -399,6 +455,8 @@ class Executor(RemoteExecutor):
             AttributeError,
             TimeoutError,
             asyncio.TimeoutError,
+            xmlrpc_client.Fault,
+            ValueError,
         ) as serror:
             self.logger.warning(
                 f"ZSLURM job status check failed. The error message was {serror}"
@@ -412,12 +470,13 @@ class Executor(RemoteExecutor):
 
         if zslurm_done_jobs:
             try:
-                self._last_seen_done_jobid = zslurm_done_jobs[-1][0]
+                # list_done_jobs is newest-first; advance to the newest item.
+                self._last_seen_done_jobid = zslurm_done_jobs[0][0]
             except (IndexError, TypeError, KeyError):
                 pass
 
-        done_job_ids_state = {d[0]: d[2] for d in zslurm_done_jobs}
-        active_job_ids_state = {a[0]: a[2] for a in zslurm_active_jobs}
+        done_job_ids_state = {str(d[0]): d[2] for d in zslurm_done_jobs}
+        active_job_ids_state = {str(a[0]): a[2] for a in zslurm_active_jobs}
 
         missing_status = []
         failed_states = {"CANCELLED", "FAILED", "TIMEOUT", "ERROR"}
@@ -428,15 +487,20 @@ class Executor(RemoteExecutor):
 
         for active_job in active_jobs:
             done = False
-            if active_job.external_jobid in done_job_ids_state:
-                state = done_job_ids_state[active_job.external_jobid]
+            external_jobid = str(active_job.external_jobid)
+            if targeted_states is not None and external_jobid in targeted_states:
+                state = targeted_states[external_jobid]
+                done = external_jobid in targeted_terminal
+                any_finished = any_finished or done
+            elif external_jobid in done_job_ids_state:
+                state = done_job_ids_state[external_jobid]
                 done = True
                 any_finished = True
-            elif active_job.external_jobid in active_job_ids_state:
-                state = active_job_ids_state[active_job.external_jobid]
+            elif external_jobid in active_job_ids_state:
+                state = active_job_ids_state[external_jobid]
             else:
                 # job not found in zslurm??
-                missing_status.append(active_job.external_jobid)
+                missing_status.append(external_jobid)
                 yield active_job  # for now
                 continue
 
