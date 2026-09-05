@@ -23,6 +23,12 @@ runtime-only `ZSLURM_JOB_URL`; the chief adds its unique `ZSLURM_JOB_ID`.
 Downstream provenance code can therefore distinguish logical rules sharing one
 outer `SLURM_JOB_ID` and authenticate their terminal state with the manager.
 
+Connected Snakemake `group` jobs are submitted as one logical ZSlurm job. All
+rules inside that group inherit the same `ZSLURM_JOB_ID`, as expected for one
+scheduler allocation; rules outside the group receive their own logical ID.
+The minimal `tests/fixtures/grouped_chain.smk` workflow can be used for an
+end-to-end manager smoke test.
+
 
 ## Pipeline priority
 
