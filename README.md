@@ -4,6 +4,20 @@ A Snakemake executor plugin directly interfacing with the zslurm wrapper for Slu
 
 Zslurm: https://github.com/holstegelab/zslurm
 
+## Portable resource names
+
+The executor accepts both the original ZSlurm resource names and the standard
+names used by Snakemake's Slurm executor:
+
+| ZSlurm resource | Portable alias | Units passed to ZSlurm |
+|---|---|---|
+| `time` | `runtime` | seconds (`runtime` is converted from minutes) |
+| `n` | `cpus_per_task` | cores |
+
+The native name takes precedence when both are set. If neither CPU resource is
+present, rule `threads` and then Snakemake's internal `_cores` value are used.
+This allows one workflow to keep executor-specific policy in separate profiles.
+
 
 ## Pipeline priority
 

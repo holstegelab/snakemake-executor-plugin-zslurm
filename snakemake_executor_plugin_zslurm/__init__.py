@@ -61,6 +61,53 @@ DEFAULT_PRIORITY = 100
 TARGETED_STATUS_RETRY_SECONDS = 300
 
 
+def resolve_runtime_seconds(resources):
+    """Resolve a job runtime to ZSlurm's seconds.
+
+    ``time`` is the native ZSlurm resource and is already expressed in
+    seconds.  ``runtime`` is Snakemake's portable scheduler resource and is
+    expressed in minutes (as used by the official Slurm executor).  Keeping
+    the native name first preserves existing profiles while allowing a
+    standard Slurm profile to move to ZSlurm without silently falling back to
+    the one-hour default.
+    """
+    if resources.get("time") is not None:
+        value = ensure_float(resources.get("time"), "time must be a number")
+    elif resources.get("runtime") is not None:
+        value = ensure_float(
+            resources.get("runtime"), "runtime must be a number"
+        ) * 60.0
+    else:
+        value = 3600.0
+    if value <= 0:
+        raise ValueError("job runtime must be greater than zero")
+    return value
+
+
+def resolve_cores(resources, threads=None):
+    """Resolve portable and native CPU resource names.
+
+    ``n`` remains the explicit ZSlurm override.  The standard
+    ``cpus_per_task`` resource comes next because site profiles may inflate it
+    to satisfy a memory-per-core policy.  Rule threads and Snakemake's internal
+    ``_cores`` value are fallbacks for otherwise portable workflows.
+    """
+    candidates = (
+        ("n", resources.get("n")),
+        ("cpus_per_task", resources.get("cpus_per_task")),
+        ("threads", threads),
+        ("_cores", resources.get("_cores")),
+    )
+    for name, raw in candidates:
+        if raw is None:
+            continue
+        value = ensure_float(raw, f"{name} must be a number")
+        if value <= 0:
+            raise ValueError(f"{name} must be greater than zero")
+        return value
+    return 1.0
+
+
 def is_missing_rpc_method(error, method):
     """Return whether an XML-RPC fault means a rolling old manager."""
     detail = str(getattr(error, "faultString", error)).lower()
@@ -258,12 +305,13 @@ class Executor(RemoteExecutor):
         partition = job.resources.get("partition", "compute")
         cmd = self.format_job_exec(job)
 
-        reqtime = ensure_float(
-            job.resources.get("time", 3600), f"time must be an number for {job_name}"
-        )
-        cores = ensure_float(
-            job.resources.get("n", 1), f"n must be an number for {job_name}"
-        )
+        try:
+            reqtime = resolve_runtime_seconds(job.resources)
+            cores = resolve_cores(
+                job.resources, threads=getattr(job, "threads", None)
+            )
+        except ValueError as error:
+            raise WorkflowError(f"Invalid resources for {job_name}: {error}") from error
         mem = ensure_float(
             job.resources.get("mem_mb", 500), f"mem_mb must be an number for {job_name}"
         )

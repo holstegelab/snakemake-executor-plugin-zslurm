@@ -10,6 +10,8 @@
 
 * Submit S3 downloads only to the independent S3 transfer pool instead of also
   consuming dCache fallback slots.
+* Accept Snakemake's portable `runtime` (minutes) and `cpus_per_task` resource
+  names while retaining `time` (seconds) and `n` as explicit ZSlurm overrides.
 
 ## 1.0.0 (2024-11-13)
 
