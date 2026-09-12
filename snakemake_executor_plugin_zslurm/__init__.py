@@ -60,6 +60,21 @@ DEFAULT_PRIORITY = 100
 TARGETED_STATUS_RETRY_SECONDS = 300
 
 
+def refresh_handover_endpoint(executor):
+    """Refresh discovery after a failed status observation, without resubmission."""
+    instance = getattr(executor, "_zslurm_instance", None)
+    if not instance:
+        return False
+    current = zslurm_shared.get_job_url(instance=instance)
+    if current == getattr(executor, "_zslurm_job_url", None):
+        return False
+    proxy = zslurm_shared.TimeoutServerProxy(current, allow_none=True)
+    executor.zslurm_server = proxy
+    executor._zslurm_job_url = current
+    executor._targeted_status_retry_after = 0.0
+    return True
+
+
 def resolve_runtime_seconds(resources):
     """Resolve a job runtime to ZSlurm's seconds.
 
@@ -550,6 +565,17 @@ class Executor(RemoteExecutor):
             self.logger.warning(
                 f"ZSLURM job status check failed. The error message was {serror}"
             )
+            if self.wait:
+                try:
+                    if refresh_handover_endpoint(self):
+                        self.logger.warning(
+                            "ZSLURM instance endpoint changed; retrying observation "
+                            "on the next check without resubmitting jobs."
+                        )
+                except Exception as discovery_error:
+                    self.logger.warning(
+                        f"ZSLURM endpoint rediscovery failed: {discovery_error}"
+                    )
             if (
                 self.wait
             ):  # if wait is False, we are exiting, and zslurm has likely been shut down.

@@ -1,5 +1,6 @@
 import asyncio
 import xmlrpc.client
+from unittest import mock
 from types import SimpleNamespace
 
 from snakemake_executor_plugin_zslurm import (
@@ -68,6 +69,44 @@ def test_targeted_status_recovers_terminal_job_outside_display_history():
     assert executor.successes == ["old"]
     assert executor.errors == []
     assert remaining == [live]
+
+
+def test_status_transport_failure_rediscovers_handover_without_losing_jobs():
+    class OldServer:
+        def get_job_states(self, *args):
+            raise ConnectionRefusedError('old manager stopped')
+
+    class NewServer:
+        def get_job_states(self, ids, owner):
+            assert ids == ['42'] and owner == 'owner-1'
+            return {'schema_version': 1, 'states': {'42': 'COMPLETED'},
+                    'terminal': ['42'], 'unknown': []}
+
+    executor = FakeExecutor(OldServer())
+    executor._zslurm_instance = 'logical-name'
+    executor._zslurm_job_url = 'http://old/old-path'
+    job = SimpleNamespace(external_jobid='42')
+    with mock.patch('snakemake_executor_plugin_zslurm.zslurm_shared.get_job_url',
+                    return_value='http://new/new-path'), \
+            mock.patch('snakemake_executor_plugin_zslurm.zslurm_shared.TimeoutServerProxy',
+                       return_value=NewServer()):
+        assert collect_status(executor, [job]) == [job]
+        assert executor.successes == executor.errors == []
+        assert executor._owner_id == 'owner-1'
+        assert collect_status(executor, [job]) == []
+    assert executor.successes == ['42']
+
+
+def test_failed_rediscovery_preserves_active_jobs():
+    server = mock.Mock()
+    server.get_job_states.side_effect = ConnectionRefusedError('old endpoint')
+    executor = FakeExecutor(server)
+    executor._zslurm_instance = 'logical-name'
+    job = SimpleNamespace(external_jobid='42')
+    with mock.patch('snakemake_executor_plugin_zslurm.zslurm_shared.get_job_url',
+                    side_effect=OSError('discovery unavailable')):
+        assert collect_status(executor, [job]) == [job]
+    assert executor.errors == executor.successes == []
 
 
 def test_targeted_status_reports_terminal_failure():
