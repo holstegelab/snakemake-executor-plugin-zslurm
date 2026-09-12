@@ -1,5 +1,7 @@
 import asyncio
 import xmlrpc.client
+from xmlrpc.server import SimpleXMLRPCServer
+import threading
 from unittest import mock
 from types import SimpleNamespace
 
@@ -107,6 +109,51 @@ def test_failed_rediscovery_preserves_active_jobs():
                     side_effect=OSError('discovery unavailable')):
         assert collect_status(executor, [job]) == [job]
     assert executor.errors == executor.successes == []
+
+
+def test_real_rpc_controller_survives_closed_old_handover_endpoint():
+    with SimpleXMLRPCServer(('127.0.0.1', 0), allow_none=True, logRequests=False) as old, \
+            SimpleXMLRPCServer(('127.0.0.1', 0), allow_none=True, logRequests=False) as new:
+        def status(state):
+            def respond(ids, owner):
+                assert ids == ['42'] and owner == 'owner-1'
+                return {'schema_version': 1, 'states': {'42': state},
+                        'terminal': ['42'] if state == 'COMPLETED' else [], 'unknown': []}
+            return respond
+        old.register_function(status('RUNNING'), 'get_job_states')
+        new.register_function(status('COMPLETED'), 'get_job_states')
+        old_url = f'http://127.0.0.1:{old.server_address[1]}/RPC2'
+        new_url = f'http://127.0.0.1:{new.server_address[1]}/RPC2'
+        old_thread = threading.Thread(target=old.serve_forever, daemon=True)
+        new_thread = threading.Thread(target=new.serve_forever, daemon=True)
+        old_thread.start()
+        new_thread.start()
+        try:
+            with xmlrpc.client.ServerProxy(old_url, allow_none=True) as old_proxy:
+                executor = FakeExecutor(old_proxy)
+                executor._zslurm_instance = 'unchanged-logical-name'
+                executor._zslurm_job_url = old_url
+                job = SimpleNamespace(external_jobid='42')
+                assert collect_status(executor, [job]) == [job]
+                old.shutdown()
+                old.server_close()
+                old_thread.join()
+                # Only discovery is mocked; transport failure and the replacement
+                # ServerProxy use real loopback sockets. No Slurm jobs are created.
+                with mock.patch('snakemake_executor_plugin_zslurm.zslurm_shared.get_job_url',
+                                return_value=new_url):
+                    assert collect_status(executor, [job]) == [job]
+                    assert executor.errors == executor.successes == []
+                    assert collect_status(executor, [job]) == []
+                assert executor.successes == ['42']
+                assert executor.errors == []
+                assert executor._owner_id == 'owner-1'
+        finally:
+            if old_thread.is_alive():
+                old.shutdown()
+                old_thread.join()
+            new.shutdown()
+            new_thread.join()
 
 
 def test_targeted_status_reports_terminal_failure():
