@@ -255,7 +255,9 @@ common_settings = CommonSettings(
     job_deploy_sources=False,
     pass_default_storage_provider_args=True,
     pass_default_resources_args=True,
-    pass_envvar_declarations_to_cmd=True,
+    # Chiefs use shlex.split() + Popen(..., env=...), not a shell. An
+    # "export NAME=value &&" prefix would be treated as an executable.
+    pass_envvar_declarations_to_cmd=False,
     auto_deploy_default_storage_provider=False,
 )
 
@@ -374,6 +376,9 @@ class Executor(RemoteExecutor):
         cwd = self.workflow.workdir_init
 
         env = dict(os.environ)
+        # Include resolved workflow/storage-provider variables explicitly; some
+        # providers supply values that do not exist in the ambient environment.
+        env.update(self.envvars())
         try:
             set_execution_identity_env(
                 env,

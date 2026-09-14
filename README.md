@@ -29,6 +29,19 @@ scheduler allocation; rules outside the group receive their own logical ID.
 The minimal `tests/fixtures/grouped_chain.smk` workflow can be used for an
 end-to-end manager smoke test.
 
+## Worker environment
+
+Workflow `envvars:` declarations, `--envvars`, and storage-provider variables
+are forwarded in the job's XML-RPC environment dictionary. They are not emitted
+as shell `export ... &&` prefixes: ZSlurm chiefs launch the Python command
+directly without a shell. Values containing spaces, quotes, or newlines are
+preserved literally. Executor-owned identity, transfer-slot and thread-limit
+variables are applied afterwards; `SNAKEMAKE_PROFILE` is removed for the worker.
+
+`tests/fixtures/declared_env.smk` provides a small end-to-end environment smoke
+test. It reads the supplied restart manifest and writes only `env-check.json`
+in its test workdir. Run it in a separate scratch workdir, not a production run.
+
 
 ## Pipeline priority
 
