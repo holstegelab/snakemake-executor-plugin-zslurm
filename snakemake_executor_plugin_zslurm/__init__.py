@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
+import traceback
 import threading
 import time
 import socket
@@ -656,6 +657,15 @@ class Executor(RemoteExecutor):
             self.next_seconds_between_status_checks = 30
 
     def cancel_jobs(self, active_jobs: List[SubmittedJobInfo]):
+        # Snakemake re-raises a scheduler/checkpoint exception only AFTER this
+        # method returns. Our intentional drain can take hours, so report the
+        # initiating exception before waiting; do not change job ownership or
+        # cancellation behavior merely to make the exception visible.
+        if sys.exc_info()[0] is not None:
+            self.logger.error(
+                "Workflow exception before ZSlurm job drain:\n"
+                + "".join(traceback.format_exception(*sys.exc_info()))
+            )
         self.logger.info(
             "ZSlurm executor does not implement job cancelling. Will exit after "
             "finishing currently running jobs."
