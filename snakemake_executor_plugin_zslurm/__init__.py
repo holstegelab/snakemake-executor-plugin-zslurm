@@ -62,7 +62,7 @@ TARGETED_STATUS_RETRY_SECONDS = 300
 
 
 def refresh_handover_endpoint(executor):
-    """Refresh discovery after a failed status observation, without resubmission."""
+    """Refresh the named instance after transport failure, retaining ownership."""
     instance = getattr(executor, "_zslurm_instance", None)
     if not instance:
         return False
@@ -151,13 +151,15 @@ def parse_targeted_job_states(response):
     )
 
 
-def submit_args_with_priority(submit_args, priority):
+def submit_args_with_priority(submit_args, priority, idempotency_key=None):
     """Append the backwards-compatible zslurm priority API tail."""
     priority = ensure_int(priority)
     args = list(submit_args)
     if priority != DEFAULT_PRIORITY:
         # submit_job(..., owner, idempotency_key=None, priority=priority)
-        args.extend([None, priority])
+        args.extend([idempotency_key, priority])
+    elif idempotency_key is not None:
+        args.append(idempotency_key)
     return args
 
 
@@ -451,6 +453,12 @@ class Executor(RemoteExecutor):
         )
 
         requeue = 0  # done by snakemake
+        # One token per run_job invocation, not per transport attempt. The
+        # manager carries its token table across handover, so an accepted
+        # request whose reply was lost returns the same logical job. A later
+        # genuine Snakemake retry gets a fresh token. This does not implement
+        # restart recovery for an entirely new controller process.
+        idempotency_key = f"snakemake:{self._owner_id}:{uuid.uuid4()}"
         attempt = 4
         while attempt > 0:
             try:
@@ -482,7 +490,7 @@ class Executor(RemoteExecutor):
                 ]
                 slurm_jobid = s.submit_job(
                     *submit_args_with_priority(
-                        submit_args, self._zslurm_priority
+                        submit_args, self._zslurm_priority, idempotency_key
                     )
                 )
                 break
@@ -495,14 +503,33 @@ class Executor(RemoteExecutor):
                 else:
                     detail = ""
                 raise WorkflowError(
-                    f"ZSLURM rejected the submission.{detail} "
+                    "ZSLURM rejected the submission; the manager must support "
+                    f"idempotent submit_job requests.{detail} "
                     f"The server returned: {serror}"
                 ) from serror
-            except (socket.error, httplib.HTTPException, AttributeError) as serror:
+            except (socket.error, httplib.HTTPException) as serror:
                 attempt -= 1
                 if attempt == 0:
                     raise WorkflowError(
-                        f"ZSLURM submission failed. The error message was {serror}"
+                        "ZSLURM submission could not be confirmed. The job may "
+                        "already exist; reconcile this submission before "
+                        "restarting the workflow. Idempotency key: "
+                        f"{idempotency_key}. The error message was {serror}"
+                    ) from serror
+
+                try:
+                    if refresh_handover_endpoint(self):
+                        self.logger.warning(
+                            "ZSLURM endpoint changed; retrying the same "
+                            "idempotent submission on the discovered endpoint."
+                        )
+                except Exception:
+                    # Discovery can fail transiently too. The existing endpoint
+                    # may still be reachable; never invent another manager or
+                    # discard the original request token.
+                    self.logger.warning(
+                        "ZSLURM submission endpoint rediscovery failed; "
+                        "retaining the same endpoint and idempotency key."
                     )
 
                 time.sleep(15)

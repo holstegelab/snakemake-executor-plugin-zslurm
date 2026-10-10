@@ -70,6 +70,24 @@ It does not preempt jobs that are
 already running. Within an equal priority band, zslurm retains its existing
 FIFO/LIFO and memory-packing behaviour.
 
-The default priority 100 remains compatible with older zslurm managers. Any different priority requires a manager version that supports the extended
-submit_job API; the plugin
-reports a clear error if the running manager has not yet been updated.
+Every submission requires a manager supporting the `idempotency_key` argument
+of `submit_job`. A nondefault priority additionally requires its `priority`
+argument. Unsupported managers receive a clear error; the executor does not
+silently fall back to a submission that could be duplicated.
+
+## Submission recovery
+
+Transport retries reuse one unique submission token, including after endpoint
+rediscovery for the same named instance. ZSlurm retains accepted tokens across
+manager handover, so losing a reply does not create a second logical job.
+Owner, priority, resources and command are retained. A genuine Snakemake job
+retry uses a new token; this mechanism does not deduplicate new controller
+processes or cold starts against earlier workflow attempts. Rediscovery assumes
+the named instance still identifies the same manager lineage with its retained
+token table; do not repoint it to an unrelated, empty replacement manager.
+
+After four unconfirmed attempts the executor reports an uncertain outcome and
+the token to reconcile; it does not claim the job was never accepted. Inspect
+the manager before restarting that workflow. Running controllers retain their
+already imported plugin until their next normal start; installing an update
+does not hot-patch them.
