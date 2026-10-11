@@ -91,3 +91,41 @@ the token to reconcile; it does not claim the job was never accepted. Inspect
 the manager before restarting that workflow. Running controllers retain their
 already imported plugin until their next normal start; installing an update
 does not hot-patch them.
+
+## External receipt dependencies (shared filesystem)
+
+An opt-in rule can wait for another workflow's small JSON receipt without
+submitting a ZSlurm job or allocating a pilot worker. Declare string resources
+`zslurm_external_receipts` (absolute manifest path) and `zslurm_external_key`
+(entry key). The manifest must be a rule input; the rule's sole output is a
+**distinct readiness witness**, never the external source. Its shell command
+is not executed by this executor; use an explicit failure command so an
+unsupported executor cannot silently claim success. Do not group observer
+rules with compute rules or assign them `localrules`.
+
+The manifest schema is `ZSLURM_EXTERNAL_RECEIPTS_V1`, with `poll_seconds`
+(integer 30--3600) and `targets`, mapping each key to exactly `source`,
+`destination` (absolute paths), and nonempty `expected` (JSON fields to match).
+Nested object fields match recursively; lists and primitive types match exactly.
+Use an expected schema, donor identity and source pins rather than just a
+generic success flag. Files larger than 16 MiB are rejected. The witness schema
+is `ZSLURM_EXTERNAL_READY_V1`; it records the manifest/source byte hashes and
+explicitly grants no scientific validation. Consumers must authenticate their
+actual source closure independently.
+
+Missing, partially written or temporarily unreadable source receipts remain
+pending. Changed manifests or valid receipts with wrong identity fields fail
+the observing rule. Each donor can release independently; there is no implicit
+population barrier. Shutdown drops only in-process observations: it does not
+cancel or adopt the external producer. Original source files are never written
+or removed. Existing witnesses are not overwritten. A failed producer with no
+receipt therefore needs operator monitoring; it is never inferred as successful
+or missing biological evidence. Ordinary job submission/status/drain behavior
+is unchanged on Spider and Snellius.
+
+Observers still occupy Snakemake logical `--jobs` slots. Set that limit above
+the maximum simultaneous observers plus desired compute concurrency; the
+observers themselves consume no ZSlurm worker slots. No manager upgrade is
+required. `test_external_receipts_snakemake.py` runs a real Snakemake dependency
+test with an intentionally fake, RPC-rejecting manager; it is not a native
+cluster qualification.

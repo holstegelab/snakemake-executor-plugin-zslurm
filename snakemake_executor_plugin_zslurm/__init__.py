@@ -341,6 +341,20 @@ class Executor(RemoteExecutor):
         # with job_info being of type
         # snakemake_interface_executor_plugins.executors.base.SubmittedJobInfo.
 
+        if job.resources.get('zslurm_external_receipts') is not None:
+            from .external_receipts import from_job
+            try:
+                observer = from_job(job)
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                raise WorkflowError(f'Invalid external receipt wait: {error}') from error
+            external_id = 'external-receipt:'+str(uuid.uuid4())
+            if not hasattr(self, '_external_receipts'):
+                self._external_receipts = {}
+            self._external_receipts[external_id] = observer
+            self.logger.info(f'Observing external receipt for {job.name}; no ZSlurm worker submitted')
+            self.report_job_submission(SubmittedJobInfo(job, external_jobid=external_id))
+            return
+
         try:
             wildcard_str = "_".join(job.wildcards) if job.wildcards else ""
         except AttributeError:
@@ -543,6 +557,34 @@ class Executor(RemoteExecutor):
     async def check_active_jobs(
         self, active_jobs: List[SubmittedJobInfo]
     ) -> Generator[SubmittedJobInfo, None, None]:
+        real_jobs = []
+        for active_job in active_jobs:
+            external_id = str(active_job.external_jobid)
+            if not external_id.startswith('external-receipt:'):
+                real_jobs.append(active_job)
+                continue
+            observers = getattr(self, '_external_receipts', {})
+            if not getattr(self, 'wait', True):
+                # Shutdown stops observing, never cancels the external owner or
+                # holds the controller open for receipts that may never arrive.
+                observers.pop(external_id, None)
+                continue
+            try:
+                if external_id not in observers:
+                    raise ValueError('external receipt observation identity is missing')
+                complete = observers[external_id].check()
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                observers.pop(external_id, None)
+                self.report_job_error(active_job, msg=f'External receipt observation failed: {error}')
+            else:
+                if complete:
+                    observers.pop(external_id, None)
+                    self.report_job_success(active_job)
+                else:
+                    yield active_job
+        active_jobs = real_jobs
+        if not active_jobs:
+            return
         # check if server has already initialized
         if not hasattr(self, "zslurm_server"):
             for active_job in active_jobs:
